@@ -112,25 +112,77 @@ fn computeHash(words: array<u32, 16>, hashState: array<u32, 8>)
 	e + hashState[4],
 	f + hashState[5],
 	g + hashState[6],
-	h + hashState[7],
+	h + hashState[7]
     );
 }
 
+// Bitcoin headers are 2 blocks (1024 bits)
+// messages is 32x32 so it holds all the messages
+fn sha256TwoBlocks(m: array<u32, 32>) -> array<u32, 8> {
+    var block1: array<u32, 16> = array<u32, 16>(
+	m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+	m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]
+    );
+
+    var block2: array<u32, 16> = array<u32, 16>(
+	m[16], m[17], m[18], m[19], m[20], m[21], m[22], m[23],
+	m[24], m[25], m[26], m[27], m[28], m[29], m[30], m[31]
+    );
+
+    var hashState = computeHash(block1, SHA256_INITIAL_HASH);
+    hashState = computeHash(block2, hashState);
+    return hashState;
+}
+
+// We need to pad the 32x8 = 256 bit hash to 512
+// bits to run it again
+fn pad256to512(hash: array<u32, 8>) -> array<u32, 16> {
+    var block: array<u32, 16>;
+    for(var i = 0u; i < 8u; i = i + 1u) {
+	block[i] = hash[i];
+    }
+
+    // Padding
+    block[8] = 0x80000000u;   // 0x80 byte
+    block[9] = 0u;
+    block[10] = 0u;
+    block[11] = 0u;
+    block[12] = 0u;
+    block[13] = 0u;
+    block[14] = 0u;
+    block[15] = 0x00000100u;  // Length: 256 bits
+
+    return block;
+}
+
+// Bitcoin uses double sha256, meaning we run it twice
+// The 2 message blocks are stored in a single array
+fn doubleSha256(blocks: array<u32, 32>) -> array<u32, 8> {
+    var firstHash = sha256TwoBlocks(blocks);
+    var padded = pad256to512(firstHash);
+
+    var finalHash = computeHash(padded, SHA256_INITIAL_HASH);
+    return finalHash;
+}
+
 @group(0) @binding(0) var<storage, read_write> output: array<u32,8>;
+@group(0) @binding(1) var<storage, read> headerWords: array<u32, 32>;
 
 @compute @workgroup_size(1)
 fn main() {
-    // Input block for an empty string (padded according to SHA-256 rules)
-    var inputWords: array<u32, 16> = array<u32, 16>(
-        0x80000000u, 0x00000000u, 0x00000000u, 0x00000000u,
-        0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
-        0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
-        0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u
-    );
-
-    var finalHash = computeHash(inputWords, SHA256_INITIAL_HASH);
+    
+    var finalHash = doubleSha256(headerWords);
 
     for(var i = 0u; i < 8u; i = i + 1u) {
 	output[i] = finalHash[i];
     }
 }
+    
+// Input block for an empty string (padded according to SHA-256 rules)
+// ** FOR TESTING ** //
+//var inputWords: array<u32, 16> = array<u32, 16>(
+//0x80000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+//0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+//0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+//0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u
+//); 
