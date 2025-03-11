@@ -164,7 +164,7 @@ fn doubleSha256(blocks: array<u32, 32>) -> array<u32, 8> {
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let mTarget: array<u32, 8> = array<u32, 8>(
 	0x00000000u,  // 2 zero bytes 
-	0x00FFFFFFu,
+	0xFFFFFFFFu,
 	0xFFFFFFFFu,
 	0xFFFFFFFFu,
 	0xFFFFFFFFu,

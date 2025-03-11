@@ -3,6 +3,8 @@ use std::{
     io::{self, Write}
 };
 
+use chrono::{TimeZone, Utc};
+
 use harvester::{
     hash_with_nonce, sha256_parse_words, sha256_preprocess, BlockHeader, GpuMiner
 };
@@ -39,7 +41,7 @@ async fn main() {
         let res = miner.run_batch(&words);
 
         if let Some(nonce) = res {
-            println!("Winner winner: {nonce}");
+            println!("\nStruck Gold!");
             winning_nonce = nonce;
             break;
         }
@@ -79,7 +81,11 @@ async fn main() {
     let hash_hex = hex::encode(hash);
     println!("{}", hash_hex);
 
-    //let timestamp = u32::from_le_bytes(header_bytes[68..72].try_into().unwrap());
-    //let nonce = u32::from_le_bytes(header_bytes[76..80].try_into().unwrap());
-    //println!("Timestamp: {}, Nonce: {}", timestamp, nonce);
+    let timestamp = u32::from_be_bytes(header_bytes[68..72].try_into().unwrap());
+    let datetime = Utc.timestamp_opt(timestamp as i64, 0).unwrap();
+
+    println!("Nonce: {}\nDate: {}", 
+       winning_nonce,
+       datetime
+    );
 }
