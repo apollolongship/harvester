@@ -137,20 +137,12 @@ fn sha256TwoBlocks(m: array<u32, 32>) -> array<u32, 8> {
 // We need to pad the 32x8 = 256 bit hash to 512
 // bits to run it again
 fn pad256to512(hash: array<u32, 8>) -> array<u32, 16> {
-    var block: array<u32, 16>;
-    for(var i = 0u; i < 8u; i = i + 1u) {
-	block[i] = hash[i];
-    }
-
-    // Padding
-    block[8] = 0x80000000u;   // 0x80 byte
-    block[9] = 0u;
-    block[10] = 0u;
-    block[11] = 0u;
-    block[12] = 0u;
-    block[13] = 0u;
-    block[14] = 0u;
-    block[15] = 0x00000100u;  // Length: 256 bits
+    var block: array<u32, 16> = array<u32, 16>(
+	hash[0], hash[1], hash[2], hash[3], 
+	hash[4], hash[5], hash[6], hash[7],
+	0x80000000u, 0u, 0u, 0u, // Padding - "1"-byte
+	0u, 0u, 0u, 0x00000100u  // Length: 256 bits
+    );
 
     return block;
 }

@@ -166,5 +166,4 @@ async fn main() {
         print!("{:08x}", word);
     }
     println!();
-
 }
