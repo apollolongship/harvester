@@ -137,7 +137,7 @@ fn sha256TwoBlocks(m: array<u32, 32>) -> array<u32, 8> {
 // We need to pad the 32x8 = 256 bit hash to 512
 // bits to run it again
 fn pad256to512(hash: array<u32, 8>) -> array<u32, 16> {
-    var block: array<u32, 16> = array<u32, 16>(
+    let block: array<u32, 16> = array<u32, 16>(
 	hash[0], hash[1], hash[2], hash[3], 
 	hash[4], hash[5], hash[6], hash[7],
 	0x80000000u, 0u, 0u, 0u, // Padding - "1"-byte
@@ -157,16 +157,53 @@ fn doubleSha256(blocks: array<u32, 32>) -> array<u32, 8> {
     return finalHash;
 }
 
-@group(0) @binding(0) var<storage, read_write> output: array<u32,8>;
-@group(0) @binding(1) var<storage, read> headerWords: array<u32, 32>;
+@group(0) @binding(0) var<storage, read> headerWords: array<u32, 32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32, 1000000>;
 
-@compute @workgroup_size(1)
-fn main() {
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let mTarget: array<u32, 8> = array<u32, 8>(
+	0x00000000u,  // 2 zero bytes 
+	0x00FFFFFFu,
+	0xFFFFFFFFu,
+	0xFFFFFFFFu,
+	0xFFFFFFFFu,
+	0xFFFFFFFFu,
+	0xFFFFFFFFu,
+	0xFFFFFFFFu 
+    );
+
+    let thId = id.x;
+    // Lucky Number?
+    let baseNonce = 777777u;
     
-    var finalHash = doubleSha256(headerWords);
+    // Nonce on this invocation: base + id
+    let nonce: u32 = baseNonce + thId;
+
+    var words: array<u32, 32>;
+    // The words should be copied
+    for(var i = 0u; i < 32u; i = i + 1u) {
+	words[i] = headerWords[i];
+    }
+
+    // The nonce is in bytes 76-80 in the btc header
+    // 76 / 4 = 19 (each location in words is 4 bytes)
+    words[19] = nonce;
+    
+    var finalHash = doubleSha256(words);
+    var meetsTarget = true;
 
     for(var i = 0u; i < 8u; i = i + 1u) {
-	output[i] = finalHash[i];
+	if(finalHash[i] > mTarget[i]) {
+	    meetsTarget = false;
+	    break;
+	}
+    }
+
+    if(meetsTarget) {
+	output[thId] = nonce;
+    } else {
+	output[thId] = 0u;
     }
 }
     

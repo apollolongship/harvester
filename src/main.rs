@@ -1,4 +1,11 @@
-use harvester::{sha256_parse_words, sha256_preprocess, BlockHeader};
+use std::{
+    time::Instant,
+    io::{self, Write}
+};
+
+use harvester::{
+    hash_with_nonce, sha256_parse_words, sha256_preprocess, BlockHeader, GpuMiner
+};
 
 #[tokio::main]
 async fn main() {
@@ -14,156 +21,65 @@ async fn main() {
     let mut header_bytes = [0u8; 80];
     // Add last header to the byte version, nonce left as 0
     header_bytes[..76].copy_from_slice(&header.to_bytes());
-
-    //let hex_string = hex::encode(&header_bytes);
-    //println!("{}", hex_string);
-
+    
     // Add padding to reach 128 bytes
     let padded = sha256_preprocess(&header_bytes);
-
-    let words = sha256_parse_words(&padded);
-
-    // ** WGPU STUFF ** //
-
-    // WGPU instance (navigator.gpu in js/browser)
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let mut words = sha256_parse_words(&padded);
     
-    // GPUAdapter, like a "bridge" to the GPU
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions::default())
-        .await.unwrap();
+    let mut miner = GpuMiner::new(1_000_000).await;
+    println!("Starting mining run...");
 
-    // GPUDevice, encapsulates & exposes functionality of device
-    // queue is the list of tasks which we build up to run together
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default(), None)
-        .await.unwrap();
+    let mut count = 0;
+    let winning_nonce: u32;
+    let start = Instant::now(); 
 
-    println!("Connected to the following GPU: {:?}", adapter.get_info().name);
+    loop {
+        count += 1;
 
-    // Load our shader code by creating a shader module
-    let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Shader I"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("mine.wgsl").into()),
-    });
+        let res = miner.run_batch(&words);
 
-    // Layout for bind group (buffers)
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Bind Group Layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-    
-    // Creating our compute pipeline (represents the whole function of hardware + software)
-    let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Compute Pipe I"),
-        layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        })),
-        module: &shader_module,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
-    // Send block words to GPU
-    // size is 128 since 128/32 = 4 (size of u32)
-    let header_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Header Buffer"),
-        size: 128,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    queue.write_buffer(&header_buffer, 0, bytemuck::cast_slice(&words));
-    
-    // Store for the final hash
-    let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Output Buffer"),
-        size: 32,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    
-    // Connect output buffer to shader
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Bind Group"),
-        layout: &bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: output_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: header_buffer.as_entire_binding(),
-            },
-        ],
-    });
-    
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Command Encoder"),
-    });
-
-    // Compute pass
-    {
-        let mut compute_pass = encoder.begin_compute_pass(
-            &wgpu::ComputePassDescriptor { 
-                label: Some("Compute Pass"), 
-                timestamp_writes: None }
-        );
+        if let Some(nonce) = res {
+            println!("Winner winner: {nonce}");
+            winning_nonce = nonce;
+            break;
+        }
         
-        compute_pass.set_pipeline(&compute_pipeline);
-        compute_pass.set_bind_group(0, &bind_group, &[]);
-        compute_pass.dispatch_workgroups(1, 1, 1);
+        if count % 15 == 0 {
+            let time = start.elapsed().as_secs_f64();
+
+            // Calculate the hash rate (hashes per second)
+            let hashes_per_second = (count as f64) / time;
+
+            print!(
+            "\rTried {} million hashes at {:.2} MH/s", 
+            count, hashes_per_second);
+            io::stdout().flush().unwrap();
+        }
+
+
+        // Timestamp is at byte 68 in the original header
+        // 68 / 4 = 7
+        words[17] = words[17] + 1;
     }
 
-    // Staging buffer (accessible from CPU)
-    let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Staging Buffer"),
-        size: 32,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
+    // Nonce at 76 / 4 = 19
+    words[19] = winning_nonce;
 
-    encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging_buffer, 0, 32);
-    queue.submit(Some(encoder.finish()));
-
-    // Map staging buffer and wait for gpu to finish
-    let slice = staging_buffer.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |res| {
-        res.unwrap();
-    });
-    device.poll(wgpu::Maintain::Wait);
-
-    let data = slice.get_mapped_range();
-    let hash: [u32; 8] = bytemuck::cast_slice(&data).try_into().unwrap();
-    
-    println!("GPU:");
-    for word in hash.iter() {
-        print!("{:08x}", word);
+    // Reconstruct the 80-byte header
+    let mut header_bytes = [0u8; 80];
+    for i in 0..20 {
+        let word_bytes = words[i].to_be_bytes(); // Big-endian
+        let start = i * 4;
+        header_bytes[start..start + 4]
+            .copy_from_slice(&word_bytes);
     }
-    println!();
+
+    // Compute and print the hash
+    let hash = hash_with_nonce(&header_bytes);
+    let hash_hex = hex::encode(hash);
+    println!("{}", hash_hex);
+
+    //let timestamp = u32::from_le_bytes(header_bytes[68..72].try_into().unwrap());
+    //let nonce = u32::from_le_bytes(header_bytes[76..80].try_into().unwrap());
+    //println!("Timestamp: {}, Nonce: {}", timestamp, nonce);
 }
