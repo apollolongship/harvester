@@ -31,14 +31,7 @@ impl GpuMiner {
         ).await.unwrap();
 
         // Load shader
-        let shader = device.create_shader_module(
-            wgpu::ShaderModuleDescriptor { 
-                label: Some("Shader Mine"), 
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("mine.wgsl").into()
-                )
-            }
-        );
+        let shader = create_shader_with_wg_size(&device, 0);
 
         // Buffer to hold header on the GPU
         // Padded buffer is 128 bytes = 1024 bits
@@ -158,6 +151,7 @@ impl GpuMiner {
         }
     }
 
+
     pub fn run_batch(&mut self, words: &[u32; 32]) -> Option<u32> {
         // Send header words to buffer
         self.queue.write_buffer(
@@ -213,6 +207,20 @@ impl GpuMiner {
 
         None
     }
+}
+/// Takes a device and the size, returns shaderModule
+fn create_shader_with_wg_size(device: &wgpu::Device, _size: u16) 
+    -> wgpu::ShaderModule {
+        let sha256_shader = include_str!("sha256.wgsl");
+        let mine_shader = include_str!("mine.wgsl");
+
+        let combined_shader = format!("{}\n{}", 
+            sha256_shader, mine_shader);
+
+        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Mining Shader"),
+            source: wgpu::ShaderSource::Wgsl(combined_shader.into()),
+        })
 }
 
 pub struct BlockHeader {

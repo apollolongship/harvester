@@ -6,7 +6,11 @@ use std::{
 use chrono::{TimeZone, Utc};
 
 use harvester::{
-    hash_with_nonce, sha256_parse_words, sha256_preprocess, BlockHeader, GpuMiner
+    hash_with_nonce, 
+    sha256_parse_words, 
+    sha256_preprocess, 
+    BlockHeader, 
+    GpuMiner
 };
 
 #[tokio::main]
@@ -80,6 +84,7 @@ async fn main() {
     let hash_hex = hex::encode(hash);
     println!("{}", hash_hex);
 
+    // Convert timestamp bytes to readable format
     let timestamp = u32::from_be_bytes(header_bytes[68..72].try_into().unwrap());
     let datetime = Utc.timestamp_opt(timestamp as i64, 0).unwrap();
 
