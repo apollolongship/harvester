@@ -181,7 +181,7 @@ impl GpuMiner {
             compute_pass.set_pipeline(&self.compute_pipeline);
             compute_pass.set_bind_group(0, &self.bind_group, &[]);
             compute_pass.dispatch_workgroups(
-                &self.batch_size / 256, 1, 1
+                &self.batch_size / 32, 1, 1
             );
         }
 

@@ -12,7 +12,7 @@ use harvester::{
 #[tokio::main]
 async fn main() {
     // Block 884,633
-    let header = BlockHeader::new (
+    let header = BlockHeader::new(
         "02000000",
         "0000000000000000000146601a36528d193ce46aafc00a806b9512663ea89be8",
         "e1419d88433680aeebc7baf6fea1356992cc06b9cb7be7c757a01e003cc78c2b",
@@ -49,7 +49,6 @@ async fn main() {
         if count % 15 == 0 {
             let time = start.elapsed().as_secs_f64();
 
-            // Calculate the hash rate (hashes per second)
             let hashes_per_second = (count as f64) / time;
 
             print!(
@@ -84,7 +83,7 @@ async fn main() {
     let timestamp = u32::from_be_bytes(header_bytes[68..72].try_into().unwrap());
     let datetime = Utc.timestamp_opt(timestamp as i64, 0).unwrap();
 
-    println!("Nonce: {}\nDate: {}", 
+    println!("Nonce: {}\nTimestamp: {}", 
        winning_nonce,
        datetime
     );
