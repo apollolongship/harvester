@@ -1,4 +1,4 @@
-use std::{convert::TryInto, u8};
+use std::{convert::TryInto, time::Instant, u8};
 
 use hex::FromHexError;
 use sha2::{Digest, Sha256};
@@ -11,68 +11,53 @@ pub struct GpuMiner {
     output_buffer: wgpu::Buffer,
     staging_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    batch_size: u32
+    bind_group_layout: wgpu::BindGroupLayout,
+    batch_size: u32,
+    wg_size: u32,
 }
 
 impl GpuMiner {
     pub async fn new(batch_size: u32) -> Self {
         // Standard wgpu setup
-        let instance = wgpu::Instance::new(
-            &wgpu::InstanceDescriptor::default()
-        );
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
-        let adapter = instance.request_adapter(
-            &wgpu::RequestAdapterOptions::default()
-        ).await.unwrap();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
+            .unwrap();
 
-        let (device, queue) = adapter.request_device(
-            &wgpu::DeviceDescriptor::default(),
-            None
-        ).await.unwrap();
-
-        // Load shader
-        let shader = create_shader_with_wg_size(&device, 0);
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .await
+            .unwrap();
 
         // Buffer to hold header on the GPU
         // Padded buffer is 128 bytes = 1024 bits
-        let header_buffer = device.create_buffer(
-            &wgpu::BufferDescriptor {
-                label: Some("Header Buffer"),
-                size: 128,
-                mapped_at_creation: false,
-                usage: 
-                    wgpu::BufferUsages::STORAGE |
-                    wgpu::BufferUsages::COPY_DST,
-            }
-        );
-        
+        let header_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Header Buffer"),
+            size: 128,
+            mapped_at_creation: false,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
         // Buffer to hold output on the gpu
-        let output_buffer = device.create_buffer(
-            &wgpu::BufferDescriptor {
-                label: Some("Output Buffer"),
-                size: (batch_size * 4) as u64,
-                mapped_at_creation: false,
-                usage: 
-                    wgpu::BufferUsages::STORAGE |
-                    wgpu::BufferUsages::COPY_SRC,
-            }
-        );
+        let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Output Buffer"),
+            size: (batch_size * 4) as u64,
+            mapped_at_creation: false,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
 
         // Staging buffer to map output from CPU
-        let staging_buffer = device.create_buffer(
-            &wgpu::BufferDescriptor {
-                label: Some("Staging Buffer"),
-                size: (batch_size * 4) as u64,
-                mapped_at_creation: false,
-                usage: 
-                    wgpu::BufferUsages::MAP_READ |
-                    wgpu::BufferUsages::COPY_DST,
-            }
-        );
+        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Staging Buffer"),
+            size: (batch_size * 4) as u64,
+            mapped_at_creation: false,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        });
 
         // Layout for bind group (buffers)
-        let bind_group_layout = device.create_bind_group_layout(
-            &wgpu::BindGroupLayoutDescriptor {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Bind Group Layout"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -99,43 +84,46 @@ impl GpuMiner {
         });
 
         // Create the bind group
-        let bind_group = device.create_bind_group(
-            &wgpu::BindGroupDescriptor { 
-                label: Some("Bind Group"), 
-                layout: &bind_group_layout, 
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: header_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: output_buffer.as_entire_binding(),
-                    },
-                ], 
-            }
-        );
-        
-        // Creating our compute pipeline 
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: header_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Load shader
+        // Default workgroup size of 64
+        let shader = create_shader_with_wg_size(&device, 64);
+        let wg_size = 64;
+
+        // Creating our compute pipeline
         // (represents the whole function of hardware + software)
-        let compute_pipeline = device.create_compute_pipeline(&
-            wgpu::ComputePipelineDescriptor {
-                label: Some("Compute Pipe I"),
-                layout: Some(&device.create_pipeline_layout(
-                    &wgpu::PipelineLayoutDescriptor {
-                        label: Some("Pipeline Layout"),
-                        bind_group_layouts: &[&bind_group_layout],
-                        push_constant_ranges: &[],
-                    })
-                ),
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Pipe I"),
+            layout: Some(
+                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Pipeline Layout"),
+                    bind_group_layouts: &[&bind_group_layout],
+                    push_constant_ranges: &[],
+                }),
+            ),
             module: &shader,
             entry_point: Some("main"),
             compilation_options: Default::default(),
             cache: None,
         });
-        
+
         println!("Created GPU Miner.");
-        println!("Connected to the following GPU: {:?}", 
+        println!(
+            "Connected to the following GPU: {:?}",
             adapter.get_info().name
         );
 
@@ -147,45 +135,103 @@ impl GpuMiner {
             output_buffer,
             staging_buffer,
             bind_group,
-            batch_size
+            bind_group_layout,
+            batch_size,
+            wg_size,
         }
     }
 
+    // Helper function to set compute pipe
+    fn set_pipeline(&mut self, shader: &wgpu::ShaderModule) {
+        self.compute_pipeline =
+            self.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("Compute Pipe I"),
+                    layout: Some(&self.device.create_pipeline_layout(
+                        &wgpu::PipelineLayoutDescriptor {
+                            label: Some("Pipeline Layout"),
+                            bind_group_layouts: &[&self.bind_group_layout],
+                            push_constant_ranges: &[],
+                        },
+                    )),
+                    module: shader,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+    }
+
+    /// Automatically sets optimal workgroup size
+    pub fn autotune(&mut self) {
+        // Largest supported workgroup size
+        let max = self.device.limits().max_compute_workgroup_size_x;
+
+        let mut best_size = 16;
+        let mut best_time = u128::MAX;
+
+        // Start checking from 2^4 (16)
+        let base: u32 = 2;
+        let mut n = 4;
+
+        while base.pow(n) <= max {
+            let shader = create_shader_with_wg_size(&self.device, base.pow(n) as u16);
+
+            self.wg_size = base.pow(n);
+            self.set_pipeline(&shader);
+
+            let start_time = Instant::now();
+            for _ in 0..10 {
+                _ = self.run_batch(&[0u32; 32]);
+            }
+            let time = start_time.elapsed().as_micros();
+
+            println!("Tested {}, ran in {} ms", base.pow(n), time);
+            if time < best_time {
+                best_time = time;
+                best_size = base.pow(n);
+            }
+            n += 1;
+        }
+
+        println!("Running with wg_size: {best_size}");
+        let shader = create_shader_with_wg_size(&self.device, best_size as u16);
+        self.set_pipeline(&shader);
+        self.wg_size = best_size;
+    }
 
     pub fn run_batch(&mut self, words: &[u32; 32]) -> Option<u32> {
         // Send header words to buffer
-        self.queue.write_buffer(
-            &self.header_buffer, 0, bytemuck::cast_slice(words));
+        self.queue
+            .write_buffer(&self.header_buffer, 0, bytemuck::cast_slice(words));
 
         // Command encoder
-        let mut encoder = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor{
-                label: Some("Command Encoder")
-            }
-        );
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Command Encoder"),
+            });
 
         // Run the compute shader
         {
-            let mut compute_pass = encoder.begin_compute_pass(
-                &wgpu::ComputePassDescriptor { 
-                    label: Some("Compute Pass"), 
-                    timestamp_writes: None, 
-                }
-            );
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+                timestamp_writes: None,
+            });
             compute_pass.set_pipeline(&self.compute_pipeline);
             compute_pass.set_bind_group(0, &self.bind_group, &[]);
-            compute_pass.dispatch_workgroups(
-                &self.batch_size / 32, 1, 1
-            );
+            compute_pass.dispatch_workgroups(&self.batch_size / &self.wg_size, 1, 1);
         }
 
         // Copy results to staging buffer to read from CPU
         encoder.copy_buffer_to_buffer(
-            &self.output_buffer, 0, 
-            &self.staging_buffer, 0, (&self.batch_size * 4) as u64
+            &self.output_buffer,
+            0,
+            &self.staging_buffer,
+            0,
+            (&self.batch_size * 4) as u64,
         );
         self.queue.submit(Some(encoder.finish()));
-        
+
         let slice = self.staging_buffer.slice(..);
 
         slice.map_async(wgpu::MapMode::Read, |res| {
@@ -198,29 +244,29 @@ impl GpuMiner {
 
         drop(data);
         self.staging_buffer.unmap();
-        
+
         for &nonce in res.iter() {
             if nonce != 0 {
                 return Some(nonce);
             }
-        } 
+        }
 
         None
     }
 }
 /// Takes a device and the size, returns shaderModule
-fn create_shader_with_wg_size(device: &wgpu::Device, _size: u16) 
-    -> wgpu::ShaderModule {
-        let sha256_shader = include_str!("sha256.wgsl");
-        let mine_shader = include_str!("mine.wgsl");
+fn create_shader_with_wg_size(device: &wgpu::Device, size: u16) -> wgpu::ShaderModule {
+    let sha256_shader = include_str!("sha256.wgsl");
 
-        let combined_shader = format!("{}\n{}", 
-            sha256_shader, mine_shader);
+    let mine_shader = include_str!("mine.wgsl");
+    let mine_shader = mine_shader.replace("{{wg_size}}", &size.to_string());
 
-        device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Mining Shader"),
-            source: wgpu::ShaderSource::Wgsl(combined_shader.into()),
-        })
+    let combined_shader = format!("{}\n{}", sha256_shader, mine_shader);
+
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Mining Shader"),
+        source: wgpu::ShaderSource::Wgsl(combined_shader.into()),
+    })
 }
 
 pub struct BlockHeader {
@@ -229,7 +275,7 @@ pub struct BlockHeader {
     merkle_root: [u8; 32],
     timestamp: u32,
     bits: u32,
-} 
+}
 
 /// Holds block header information
 impl BlockHeader {
@@ -238,31 +284,35 @@ impl BlockHeader {
         prev_hash: &str,
         merkle_root: &str,
         timestamp: &str,
-        bits: &str
+        bits: &str,
     ) -> Result<Self, FromHexError> {
-            let version = Self::hex_to_u32(version)?;
-            let prev_hash = Self::hex_to_32_bytes(prev_hash)?;
-            let merkle_root = Self::hex_to_32_bytes(merkle_root)?;
-            let timestamp = Self::hex_to_u32(timestamp)?;
-            let bits =  Self::hex_to_u32(bits)?;
+        let version = Self::hex_to_u32(version)?;
+        let prev_hash = Self::hex_to_32_bytes(prev_hash)?;
+        let merkle_root = Self::hex_to_32_bytes(merkle_root)?;
+        let timestamp = Self::hex_to_u32(timestamp)?;
+        let bits = Self::hex_to_u32(bits)?;
 
-            Ok(
-                BlockHeader {version, prev_hash, merkle_root, timestamp, bits}
-            )
+        Ok(BlockHeader {
+            version,
+            prev_hash,
+            merkle_root,
+            timestamp,
+            bits,
+        })
     }
 
     /// Converts the header fields and returns them as an [u8; 76]
     pub fn to_bytes(&self) -> [u8; 76] {
-            let mut fixed_bytes = [0u8; 76];
-            fixed_bytes[0..4].copy_from_slice(&self.version.to_le_bytes());
-            fixed_bytes[4..36].copy_from_slice(&self.prev_hash);
-            fixed_bytes[36..68].copy_from_slice(&self.merkle_root);
-            fixed_bytes[68..72].copy_from_slice(&self.timestamp.to_le_bytes());
-            fixed_bytes[72..76].copy_from_slice(&self.bits.to_le_bytes());
+        let mut fixed_bytes = [0u8; 76];
+        fixed_bytes[0..4].copy_from_slice(&self.version.to_le_bytes());
+        fixed_bytes[4..36].copy_from_slice(&self.prev_hash);
+        fixed_bytes[36..68].copy_from_slice(&self.merkle_root);
+        fixed_bytes[68..72].copy_from_slice(&self.timestamp.to_le_bytes());
+        fixed_bytes[72..76].copy_from_slice(&self.bits.to_le_bytes());
 
-            fixed_bytes
+        fixed_bytes
     }
-    
+
     // Helper functions
     fn hex_to_u32(s: &str) -> Result<u32, FromHexError> {
         // 4 bytes = 32 bits
@@ -279,7 +329,7 @@ impl BlockHeader {
     }
 }
 
-pub fn hash_with_nonce(header: &[u8; 80])-> [u8; 32] {
+pub fn hash_with_nonce(header: &[u8; 80]) -> [u8; 32] {
     Sha256::digest(Sha256::digest(header)).into()
 }
 
@@ -289,7 +339,7 @@ pub fn sha256_preprocess(header: &[u8; 80]) -> [u8; 128] {
     let mut padded = [0u8; 128];
     // First 80 bytes are from the original header
     padded[0..80].copy_from_slice(header);
-    
+
     // Add a byte with 1
     padded[80] = 0x80;
 
@@ -310,11 +360,10 @@ pub fn sha256_parse_words(header: &[u8; 128]) -> [u32; 32] {
     words
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn preprocess_header_is_copied_correctly() {
         let header = [0x01; 80];

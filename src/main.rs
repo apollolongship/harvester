@@ -28,6 +28,7 @@ async fn main() {
     let mut words = sha256_parse_words(&padded);
 
     let mut miner = GpuMiner::new(1_000_000).await;
+    miner.autotune();
     println!("Starting mining run...");
 
     let mut count = 0;

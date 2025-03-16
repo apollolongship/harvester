@@ -4,7 +4,8 @@
 @group(0) @binding(0) var<storage, read> headerWords: array<u32, 32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32, 1000000>;
 
-@compute @workgroup_size(32)
+// wg_size needs to be set manually from CPU-side
+@compute @workgroup_size({{wg_size}})
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let mTarget: array<u32, 8> = array<u32, 8>(
 	0x00000000u,  // 2 zero bytes 
