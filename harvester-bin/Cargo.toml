@@ -1,0 +1,11 @@
+[package]
+name = "harvester-bin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu-sha256-miner = { path = "../wgpu-sha256-miner" }
+btccore-bridge = { path = "../btccore-bridge" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+chrono = "0.4"
+hex = "0.4"

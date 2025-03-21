@@ -5,7 +5,9 @@ use std::{
 
 use chrono::{TimeZone, Utc};
 
-use harvester::{hash_with_nonce, sha256_parse_words, sha256_preprocess, BlockHeader, GpuMiner};
+use wgpu_sha256_miner::{
+    hash_with_nonce, sha256_parse_words, sha256_preprocess, BlockHeader, GpuMiner,
+};
 
 #[tokio::main]
 async fn main() {

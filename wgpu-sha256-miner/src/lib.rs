@@ -183,7 +183,7 @@ impl GpuMiner {
             for _ in 0..10 {
                 _ = self.run_batch(&[0u32; 32]);
             }
-            let time = start_time.elapsed().as_micros();
+            let time = start_time.elapsed().as_millis();
 
             println!("Tested {}, ran in {} ms", base.pow(n), time);
             if time < best_time {

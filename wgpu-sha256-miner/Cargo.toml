@@ -1,0 +1,10 @@
+[package]
+name = "wgpu-sha256-miner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = "24"
+bytemuck = "1.21"
+sha2 = "0.10"
+hex = "0.4"
