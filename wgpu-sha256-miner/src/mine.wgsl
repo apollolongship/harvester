@@ -2,7 +2,7 @@
 /// import "sha256.wgsl" as sha256;
 /// So we have to manually concat files for now.
 @group(0) @binding(0) var<storage, read> headerWords: array<u32, 32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32, 1000000>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32, 1048576>;
 
 // wg_size needs to be set manually from CPU-side
 @compute @workgroup_size({{wg_size}})

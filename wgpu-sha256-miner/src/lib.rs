@@ -17,8 +17,14 @@ pub struct GpuMiner {
 }
 
 impl GpuMiner {
-    pub async fn new(batch_size: u32) -> Self {
-        // Standard wgpu setup
+    /// Goes though standard wgpu setup and
+    /// returns a GpuMiner with wg_size 64
+    pub async fn new(wg_size: Option<u32>) -> Self {
+        // Batch size should be a multiple of 2 to divide
+        // with the workgroup size, 2^20 is a good base.
+        let batch_size: u32 = 1048576;
+
+        // Start of wgpu setup
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
         let adapter = instance
@@ -101,8 +107,11 @@ impl GpuMiner {
 
         // Load shader
         // Default workgroup size of 64
-        let shader = create_shader_with_wg_size(&device, 64);
-        let wg_size = 64;
+        let wg_size = match wg_size {
+            Some(x) => x,
+            None => 64,
+        };
+        let shader = create_shader_with_wg_size(&device, wg_size as u16);
 
         // Creating our compute pipeline
         // (represents the whole function of hardware + software)
@@ -161,6 +170,11 @@ impl GpuMiner {
                 });
     }
 
+    /// Getter for batch size
+    pub fn get_batch_size(&self) -> u32 {
+        self.batch_size
+    }
+
     /// Automatically sets optimal workgroup size
     pub fn autotune(&mut self) {
         // Largest supported workgroup size
@@ -171,7 +185,7 @@ impl GpuMiner {
 
         // Start checking from 2^4 (16)
         let base: u32 = 2;
-        let mut n = 4;
+        let mut n = 5;
 
         while base.pow(n) <= max {
             let shader = create_shader_with_wg_size(&self.device, base.pow(n) as u16);
@@ -199,6 +213,8 @@ impl GpuMiner {
         self.wg_size = best_size;
     }
 
+    /// Runs one batch of nonces
+    /// If a winner is found the nonce is  pub fn run_batch(&mut self, words: &[u32; 32]) -> Option<u32>returned inside an option
     pub fn run_batch(&mut self, words: &[u32; 32]) -> Option<u32> {
         // Send header words to buffer
         self.queue
@@ -254,7 +270,7 @@ impl GpuMiner {
         None
     }
 }
-/// Takes a device and the size, returns shaderModule
+/// Creates a shader module with the specified workgroup size
 fn create_shader_with_wg_size(device: &wgpu::Device, size: u16) -> wgpu::ShaderModule {
     let sha256_shader = include_str!("sha256.wgsl");
 
@@ -269,6 +285,7 @@ fn create_shader_with_wg_size(device: &wgpu::Device, size: u16) -> wgpu::ShaderM
     })
 }
 
+/// Holds block header information
 pub struct BlockHeader {
     version: u32,
     prev_hash: [u8; 32],
@@ -277,7 +294,6 @@ pub struct BlockHeader {
     bits: u32,
 }
 
-/// Holds block header information
 impl BlockHeader {
     pub fn new(
         version: &str,

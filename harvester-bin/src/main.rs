@@ -29,7 +29,7 @@ async fn main() {
     let padded = sha256_preprocess(&header_bytes);
     let mut words = sha256_parse_words(&padded);
 
-    let mut miner = GpuMiner::new(1_000_000).await;
+    let mut miner = GpuMiner::new(None).await;
     miner.autotune();
     println!("Starting mining run...");
 
@@ -38,7 +38,7 @@ async fn main() {
     let start = Instant::now();
 
     loop {
-        count += 1;
+        count += miner.get_batch_size();
 
         let res = miner.run_batch(&words);
 
@@ -48,15 +48,13 @@ async fn main() {
             break;
         }
 
-        if count % 15 == 0 {
+        // Print out every 15 loops
+        if count % 15 * miner.get_batch_size() == 0 {
             let time = start.elapsed().as_secs_f64();
 
-            let hashes_per_second = (count as f64) / time;
+            let hashes_per_second = ((count as f64) / time) / 1_000_000.0;
 
-            print!(
-                "\rTried {} million hashes at {:.2} MH/s",
-                count, hashes_per_second
-            );
+            print!("\rTried {} hashes at {:.2} MH/s", count, hashes_per_second);
             io::stdout().flush().unwrap();
         }
 
