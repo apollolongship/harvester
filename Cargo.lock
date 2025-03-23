@@ -33,6 +33,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.97"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dcfed56ad506cb2c684a14971b8861fdc3baaaae314b9e5f9bb532cbe3ba7a4f"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -395,6 +401,7 @@ dependencies = [
 name = "harvester-bin"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "btccore-bridge",
  "chrono",
  "hex",
@@ -1150,6 +1157,7 @@ dependencies = [
 name = "wgpu-sha256-miner"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytemuck",
  "hex",
  "sha2",

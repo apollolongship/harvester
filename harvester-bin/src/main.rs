@@ -3,6 +3,7 @@ use std::{
     time::Instant,
 };
 
+use anyhow::{Context, Result};
 use chrono::{TimeZone, Utc};
 
 use wgpu_sha256_miner::{
@@ -10,7 +11,7 @@ use wgpu_sha256_miner::{
 };
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     // Block 884,633
     let header = BlockHeader::new(
         "02000000",
@@ -29,7 +30,8 @@ async fn main() {
     let padded = sha256_preprocess(&header_bytes);
     let mut words = sha256_parse_words(&padded);
 
-    let mut miner = GpuMiner::new(None).await;
+    let mut miner = GpuMiner::new(None).await.context("Miner creation failed")?;
+
     miner.autotune();
     println!("Starting mining run...");
 
@@ -84,4 +86,6 @@ async fn main() {
     let datetime = Utc.timestamp_opt(timestamp as i64, 0).unwrap();
 
     println!("Nonce: {}\nTimestamp: {}", winning_nonce, datetime);
+
+    Ok(())
 }

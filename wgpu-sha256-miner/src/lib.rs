@@ -1,8 +1,133 @@
 use std::{convert::TryInto, time::Instant, u8};
 
+use anyhow::{Context, Result};
 use hex::FromHexError;
 use sha2::{Digest, Sha256};
 
+async fn setup_gpu() -> Result<(wgpu::Device, wgpu::Queue)> {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions::default())
+        .await
+        .context("Couldn't find GPU adapter")?;
+
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor::default(), None)
+        .await
+        .context("Request for device failed.")?;
+
+    println!(
+        "Connected to the following GPU: {:?}",
+        adapter.get_info().name
+    );
+
+    Ok((device, queue))
+}
+
+type Buffers = (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer);
+
+fn create_buffers(device: &wgpu::Device, batch_size: u32) -> Buffers {
+    // Buffer to hold header on the GPU
+    // Padded buffer is 128 bytes = 1024 bits
+    let header_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Header Buffer"),
+        size: 128,
+        mapped_at_creation: false,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    });
+
+    // Buffer to hold output on the gpu
+    let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Output Buffer"),
+        size: (batch_size * 4) as u64,
+        mapped_at_creation: false,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    });
+
+    // Staging buffer to map output from CPU
+    let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Staging Buffer"),
+        size: (batch_size * 4) as u64,
+        mapped_at_creation: false,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+    });
+
+    (header_buffer, output_buffer, staging_buffer)
+}
+
+fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Bind Group Layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    })
+}
+
+fn create_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    header_buffer: &wgpu::Buffer,
+    output_buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Bind Group"),
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: header_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output_buffer.as_entire_binding(),
+            },
+        ],
+    })
+}
+
+fn create_compute_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    shader: &wgpu::ShaderModule,
+) -> wgpu::ComputePipeline {
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Compute Pipe I"),
+        layout: Some(
+            &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Pipeline Layout"),
+                bind_group_layouts: &[&layout],
+                push_constant_ranges: &[],
+            }),
+        ),
+        module: &shader,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    })
+}
+
+/// A GPU based miner ready for batch jobs
 pub struct GpuMiner {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -17,93 +142,19 @@ pub struct GpuMiner {
 }
 
 impl GpuMiner {
-    /// Goes though standard wgpu setup and
-    /// returns a GpuMiner with wg_size 64
-    pub async fn new(wg_size: Option<u32>) -> Self {
+    /// Tries to create a GpuMiner
+    pub async fn new(wg_size: Option<u32>) -> Result<Self> {
         // Batch size should be a multiple of 2 to divide
         // with the workgroup size, 2^20 is a good base.
         let batch_size: u32 = 1048576;
 
-        // Start of wgpu setup
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let (device, queue) = setup_gpu().await.context("Test")?;
 
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
-            .await
-            .unwrap();
+        let (header_buffer, output_buffer, staging_buffer) = create_buffers(&device, batch_size);
 
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
-            .await
-            .unwrap();
-
-        // Buffer to hold header on the GPU
-        // Padded buffer is 128 bytes = 1024 bits
-        let header_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Header Buffer"),
-            size: 128,
-            mapped_at_creation: false,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        // Buffer to hold output on the gpu
-        let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Output Buffer"),
-            size: (batch_size * 4) as u64,
-            mapped_at_creation: false,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        });
-
-        // Staging buffer to map output from CPU
-        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Staging Buffer"),
-            size: (batch_size * 4) as u64,
-            mapped_at_creation: false,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        });
-
-        // Layout for bind group (buffers)
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        // Create the bind group
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: header_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: output_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        let bind_group_layout = create_bind_group_layout(&device);
+        let bind_group =
+            create_bind_group(&device, &bind_group_layout, &header_buffer, &output_buffer);
 
         // Load shader
         // Default workgroup size of 64
@@ -113,30 +164,11 @@ impl GpuMiner {
         };
         let shader = create_shader_with_wg_size(&device, wg_size as u16);
 
-        // Creating our compute pipeline
-        // (represents the whole function of hardware + software)
-        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Compute Pipe I"),
-            layout: Some(
-                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("Pipeline Layout"),
-                    bind_group_layouts: &[&bind_group_layout],
-                    push_constant_ranges: &[],
-                }),
-            ),
-            module: &shader,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let compute_pipeline = create_compute_pipeline(&device, &bind_group_layout, &shader);
 
         println!("Created GPU Miner.");
-        println!(
-            "Connected to the following GPU: {:?}",
-            adapter.get_info().name
-        );
 
-        GpuMiner {
+        Ok(GpuMiner {
             device,
             queue,
             compute_pipeline,
@@ -147,7 +179,7 @@ impl GpuMiner {
             bind_group_layout,
             batch_size,
             wg_size,
-        }
+        })
     }
 
     // Helper function to set compute pipe
