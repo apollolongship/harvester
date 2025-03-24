@@ -35,6 +35,10 @@ async fn create_buffers(device: &wgpu::Device, batch_size: u32) -> Result<Buffer
         .checked_mul(4)
         .ok_or_else(|| anyhow::anyhow!("Batch size too large, caused overflow"))?;
 
+    if batch_size == 0 {
+        return Err(anyhow::anyhow!("Batch size can't be zero."));
+    }
+
     device.push_error_scope(wgpu::ErrorFilter::Validation);
     // Buffer to hold header on the GPU
     // Padded buffer is 128 bytes = 1024 bits
@@ -462,10 +466,24 @@ mod tests {
     #[tokio::test]
     async fn buffer_creation_fails_invalid_batch_size() {
         let (device, _) = setup_gpu().await.unwrap();
-        let batch_size = u32::MAX;
-        let res = create_buffers(&device, batch_size).await;
 
-        assert!(res.is_err(), "Expect creation to fail with big batch size.");
+        let res = create_buffers(&device, u32::MAX).await;
+        assert!(res.is_err(), "u32 MAX should cause an error.");
+
+        let res = create_buffers(&device, 0).await;
+        assert!(
+            res.is_err(),
+            "Buffer creation should fail with 0 batch size."
+        );
+    }
+
+    #[tokio::test]
+    async fn miner_works() {
+        let mut miner = GpuMiner::new(None).await.unwrap();
+        assert!(miner.get_batch_size() != 0, "It gets created.");
+
+        let res = miner.run_batch(&[0u32; 32]);
+        assert!(res.is_none(), "We probably won't find a valid hash.");
     }
 
     #[test]
@@ -509,5 +527,48 @@ mod tests {
         expected[120..128].copy_from_slice(&length_bytes);
         let padded = sha256_preprocess(&header);
         assert_eq!(padded, expected);
+    }
+
+    #[test]
+    fn parse_words_all_zeros() {
+        let words = sha256_parse_words(&[0u8; 128]);
+        assert_eq!(words, [0u32; 32]);
+    }
+
+    #[test]
+    fn parse_words_all_ones() {
+        let words = sha256_parse_words(&[255u8; 128]);
+        assert_eq!(words, [0xFFFFFFFFu32; 32]);
+    }
+
+    #[test]
+    fn parse_words_incremental() {
+        let mut header = [0u8; 128];
+
+        for i in 0..128 {
+            header[i] = i as u8;
+        }
+
+        let words = sha256_parse_words(&header);
+
+        assert_eq!(words[0], 0x00010203);
+        assert_eq!(words[20], 0x50515253)
+        // 20*4 = 80
+        //[80,81,82,83] = hex [50,51,52,53]
+    }
+
+    #[test]
+    fn double_sha256_zeros() {
+        let res = hash_with_nonce(&[0u8; 80]);
+
+        // Known output for 80 zero bytes
+        assert_eq!(
+            res,
+            [
+                0x4b, 0xe7, 0x57, 0x0e, 0x8f, 0x70, 0xeb, 0x09, 0x36, 0x40, 0xc8, 0x46, 0x82, 0x74,
+                0xba, 0x75, 0x97, 0x45, 0xa7, 0xaa, 0x2b, 0x7d, 0x25, 0xab, 0x1e, 0x04, 0x21, 0xb2,
+                0x59, 0x84, 0x50, 0x14
+            ]
+        );
     }
 }
