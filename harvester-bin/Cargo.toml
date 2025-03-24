@@ -7,7 +7,7 @@ edition = "2021"
 wgpu-sha256-miner = { path = "../wgpu-sha256-miner" }
 btccore-bridge = { path = "../btccore-bridge" }
 
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.44", features = ["full"] }
 anyhow = "1.0"
 chrono = "0.4"
 hex = "0.4"

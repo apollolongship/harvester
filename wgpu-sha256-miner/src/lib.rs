@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use hex::FromHexError;
 use sha2::{Digest, Sha256};
 
+// Wgpu setup steps to get device and queue
 async fn setup_gpu() -> Result<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
@@ -27,7 +28,14 @@ async fn setup_gpu() -> Result<(wgpu::Device, wgpu::Queue)> {
 
 type Buffers = (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer);
 
-fn create_buffers(device: &wgpu::Device, batch_size: u32) -> Buffers {
+// Create the three buffers neccessary for CPU-GPU communication
+async fn create_buffers(device: &wgpu::Device, batch_size: u32) -> Result<Buffers> {
+    // Protect against overflow
+    batch_size
+        .checked_mul(4)
+        .ok_or_else(|| anyhow::anyhow!("Batch size too large, caused overflow"))?;
+
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
     // Buffer to hold header on the GPU
     // Padded buffer is 128 bytes = 1024 bits
     let header_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -53,9 +61,14 @@ fn create_buffers(device: &wgpu::Device, batch_size: u32) -> Buffers {
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
     });
 
-    (header_buffer, output_buffer, staging_buffer)
+    if let Some(error) = device.pop_error_scope().await {
+        Err(anyhow::anyhow!("Buffer creation failed: {:?}", error))
+    } else {
+        Ok((header_buffer, output_buffer, staging_buffer))
+    }
 }
 
+// Bind group layout defines which resources our shader will use
 fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Bind Group Layout"),
@@ -84,6 +97,7 @@ fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     })
 }
 
+// Specify resources to be used by shader
 fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -106,6 +120,8 @@ fn create_bind_group(
     })
 }
 
+// The pipeline describes which resources to use and the steps to take
+// in the computation
 fn create_compute_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -150,7 +166,9 @@ impl GpuMiner {
 
         let (device, queue) = setup_gpu().await.context("Test")?;
 
-        let (header_buffer, output_buffer, staging_buffer) = create_buffers(&device, batch_size);
+        let (header_buffer, output_buffer, staging_buffer) = create_buffers(&device, batch_size)
+            .await
+            .context("Buffer creation failed")?;
 
         let bind_group_layout = create_bind_group_layout(&device);
         let bind_group =
@@ -212,13 +230,14 @@ impl GpuMiner {
         // Largest supported workgroup size
         let max = self.device.limits().max_compute_workgroup_size_x;
 
-        let mut best_size = 16;
+        let mut best_size = 32;
         let mut best_time = u128::MAX;
 
-        // Start checking from 2^4 (16)
+        // Start checking from 2^5 (32)
         let base: u32 = 2;
         let mut n = 5;
 
+        // We test workgroup sizes as different powers of 2
         while base.pow(n) <= max {
             let shader = create_shader_with_wg_size(&self.device, base.pow(n) as u16);
 
@@ -226,7 +245,7 @@ impl GpuMiner {
             self.set_pipeline(&shader);
 
             let start_time = Instant::now();
-            for _ in 0..10 {
+            for _ in 0..20 {
                 _ = self.run_batch(&[0u32; 32]);
             }
             let time = start_time.elapsed().as_millis();
@@ -246,7 +265,7 @@ impl GpuMiner {
     }
 
     /// Runs one batch of nonces
-    /// If a winner is found the nonce is  pub fn run_batch(&mut self, words: &[u32; 32]) -> Option<u32>returned inside an option
+    /// If a winner is found the nonce is returned inside an option
     pub fn run_batch(&mut self, words: &[u32; 32]) -> Option<u32> {
         // Send header words to buffer
         self.queue
@@ -302,7 +321,7 @@ impl GpuMiner {
         None
     }
 }
-/// Creates a shader module with the specified workgroup size
+
 fn create_shader_with_wg_size(device: &wgpu::Device, size: u16) -> wgpu::ShaderModule {
     let sha256_shader = include_str!("sha256.wgsl");
 
@@ -327,6 +346,7 @@ pub struct BlockHeader {
 }
 
 impl BlockHeader {
+    /// Takes in hex strings and returns header in bit format
     pub fn new(
         version: &str,
         prev_hash: &str,
@@ -377,6 +397,7 @@ impl BlockHeader {
     }
 }
 
+/// Hashes a full 80 byte bitcoin header (including the nonce)
 pub fn hash_with_nonce(header: &[u8; 80]) -> [u8; 32] {
     Sha256::digest(Sha256::digest(header)).into()
 }
@@ -411,6 +432,41 @@ pub fn sha256_parse_words(header: &[u8; 128]) -> [u32; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn gpu_setup_works() {
+        let res = setup_gpu().await;
+        assert!(res.is_ok());
+
+        let (device, _) = res.unwrap();
+        assert_eq!(
+            device.limits().max_buffer_size > 0,
+            true,
+            "Successfully got limts"
+        )
+    }
+
+    #[tokio::test]
+    async fn buffers_created_correct_size() {
+        let (device, _) = setup_gpu().await.unwrap();
+        let batch_size = 2048;
+        let (header_buffer, output_buffer, staging_buffer) = create_buffers(&device, batch_size)
+            .await
+            .expect("Buffer creation failed.");
+
+        assert_eq!(header_buffer.size(), 128);
+        assert_eq!(output_buffer.size(), (4 * batch_size) as u64);
+        assert_eq!(staging_buffer.size(), (4 * batch_size) as u64);
+    }
+
+    #[tokio::test]
+    async fn buffer_creation_fails_invalid_batch_size() {
+        let (device, _) = setup_gpu().await.unwrap();
+        let batch_size = u32::MAX;
+        let res = create_buffers(&device, batch_size).await;
+
+        assert!(res.is_err(), "Expect creation to fail with big batch size.");
+    }
 
     #[test]
     fn preprocess_header_is_copied_correctly() {
