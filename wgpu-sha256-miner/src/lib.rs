@@ -224,6 +224,11 @@ impl GpuMiner {
                 });
     }
 
+    // Getter for worgroup size
+    pub fn get_wg_size(&self) -> u32 {
+        self.wg_size
+    }
+
     /// Getter for batch size
     pub fn get_batch_size(&self) -> u32 {
         self.batch_size
@@ -478,12 +483,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn buffers_have_correct_flags() {
+        let (device, _) = setup_gpu().await.unwrap();
+
+        let (header_buffer, output_buffer, staging_buffer) = create_buffers(&device, 4096)
+            .await
+            .expect("Bufer creation failed.");
+
+        assert!(header_buffer.usage().contains(wgpu::BufferUsages::STORAGE));
+        assert!(output_buffer.usage().contains(wgpu::BufferUsages::COPY_SRC));
+        assert!(staging_buffer
+            .usage()
+            .contains(wgpu::BufferUsages::MAP_READ));
+    }
+
+    #[tokio::test]
     async fn miner_works() {
         let mut miner = GpuMiner::new(None).await.unwrap();
         assert!(miner.get_batch_size() != 0, "It gets created.");
 
         let res = miner.run_batch(&[0u32; 32]);
         assert!(res.is_none(), "We probably won't find a valid hash.");
+    }
+
+    #[tokio::test]
+    async fn autotune_sets_reasonable_value() {
+        let (device, _) = setup_gpu().await.unwrap();
+        let mut miner = GpuMiner::new(Some(4)).await.unwrap();
+        assert!(miner.get_wg_size() == 4, "wg_size is set to chosen value.");
+
+        miner.autotune();
+        assert!(miner.get_wg_size() != 4, "wg_size was optimized.");
+        assert!(
+            miner.get_wg_size() <= device.limits().max_compute_workgroup_size_x,
+            "wg_size is within limits."
+        )
     }
 
     #[test]
