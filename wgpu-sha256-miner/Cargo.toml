@@ -9,6 +9,7 @@ bytemuck = "1.21"
 sha2 = "0.10"
 hex = "0.4"
 anyhow = "1.0"
+futures = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1.44", features = ["full"] }

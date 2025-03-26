@@ -1,3 +1,12 @@
+//! GPU accelerated SHA256 miner
+//!
+//! Takes advantage of parallelism to gain a significance speed advantage
+//! compared to multi-threaded CPU hashing.
+//!
+//! Works with any crypto that uses double SHA256 and has a 80 byte header.
+//! Most commonly used are Bitcoin, Bitcoin Cash and Bitcoin SV.
+
+use futures::channel::oneshot;
 use std::{convert::TryInto, time::Instant, u8};
 
 use anyhow::{Context, Result};
@@ -235,7 +244,7 @@ impl GpuMiner {
     }
 
     /// Automatically sets optimal workgroup size
-    pub fn autotune(&mut self) {
+    pub async fn autotune(&mut self) {
         // Largest supported workgroup size
         let max = self.device.limits().max_compute_workgroup_size_x;
 
@@ -255,7 +264,7 @@ impl GpuMiner {
 
             let start_time = Instant::now();
             for _ in 0..20 {
-                _ = self.run_batch(&[0u32; 32]);
+                _ = self.run_batch(&[0u32; 32]).await;
             }
             let time = start_time.elapsed().as_millis();
 
@@ -275,7 +284,7 @@ impl GpuMiner {
 
     /// Runs one batch of nonces
     /// If a winner is found the nonce is returned inside an option
-    pub fn run_batch(&mut self, words: &[u32; 32]) -> Option<u32> {
+    pub async fn run_batch(&mut self, words: &[u32; 32]) -> Result<Option<u32>> {
         // Send header words to buffer
         self.queue
             .write_buffer(&self.header_buffer, 0, bytemuck::cast_slice(words));
@@ -310,10 +319,14 @@ impl GpuMiner {
 
         let slice = self.staging_buffer.slice(..);
 
-        slice.map_async(wgpu::MapMode::Read, |res| {
-            res.unwrap();
+        let (sender, receiver) = oneshot::channel();
+
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
         });
         self.device.poll(wgpu::Maintain::Wait);
+
+        receiver.await.context("Mapping from GPU failed.")??;
 
         let data = slice.get_mapped_range();
         let res: Vec<u32> = bytemuck::cast_slice(&data).to_vec();
@@ -323,11 +336,11 @@ impl GpuMiner {
 
         for &nonce in res.iter() {
             if nonce != 0 {
-                return Some(nonce);
+                return Ok(Some(nonce));
             }
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -502,7 +515,8 @@ mod tests {
         let mut miner = GpuMiner::new(None).await.unwrap();
         assert!(miner.get_batch_size() != 0, "It gets created.");
 
-        let res = miner.run_batch(&[0u32; 32]);
+        let res = miner.run_batch(&[0u32; 32]).await.unwrap();
+
         assert!(res.is_none(), "We probably won't find a valid hash.");
     }
 

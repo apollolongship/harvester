@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
 
     let mut miner = GpuMiner::new(None).await.context("Miner creation failed")?;
 
-    miner.autotune();
+    miner.autotune().await;
     println!("Starting mining run...");
 
     let mut count = 0;
@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
     loop {
         count += miner.get_batch_size();
 
-        let res = miner.run_batch(&words);
+        let res = miner.run_batch(&words).await.context("Batch run failed.")?;
 
         if let Some(nonce) = res {
             println!("\nStruck Gold!");
