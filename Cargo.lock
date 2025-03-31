@@ -1313,7 +1313,6 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "futures",
- "hex",
  "sha2",
  "tokio",
  "wgpu",

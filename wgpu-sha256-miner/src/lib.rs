@@ -10,7 +10,6 @@ use futures::channel::oneshot;
 use std::{convert::TryInto, time::Instant, u8};
 
 use anyhow::{Context, Result};
-use hex::FromHexError;
 use sha2::{Digest, Sha256};
 
 // Wgpu setup steps to get device and queue
@@ -358,68 +357,7 @@ fn create_shader_with_wg_size(device: &wgpu::Device, size: u16) -> wgpu::ShaderM
     })
 }
 
-/// Holds block header information
-pub struct BlockHeader {
-    version: u32,
-    prev_hash: [u8; 32],
-    merkle_root: [u8; 32],
-    timestamp: u32,
-    bits: u32,
-}
-
-impl BlockHeader {
-    /// Takes in hex strings and returns header in bit format
-    pub fn new(
-        version: &str,
-        prev_hash: &str,
-        merkle_root: &str,
-        timestamp: &str,
-        bits: &str,
-    ) -> Result<Self, FromHexError> {
-        let version = Self::hex_to_u32(version)?;
-        let prev_hash = Self::hex_to_32_bytes(prev_hash)?;
-        let merkle_root = Self::hex_to_32_bytes(merkle_root)?;
-        let timestamp = Self::hex_to_u32(timestamp)?;
-        let bits = Self::hex_to_u32(bits)?;
-
-        Ok(BlockHeader {
-            version,
-            prev_hash,
-            merkle_root,
-            timestamp,
-            bits,
-        })
-    }
-
-    /// Converts the header fields and returns them as an [u8; 76]
-    pub fn to_bytes(&self) -> [u8; 76] {
-        let mut fixed_bytes = [0u8; 76];
-        fixed_bytes[0..4].copy_from_slice(&self.version.to_le_bytes());
-        fixed_bytes[4..36].copy_from_slice(&self.prev_hash);
-        fixed_bytes[36..68].copy_from_slice(&self.merkle_root);
-        fixed_bytes[68..72].copy_from_slice(&self.timestamp.to_le_bytes());
-        fixed_bytes[72..76].copy_from_slice(&self.bits.to_le_bytes());
-
-        fixed_bytes
-    }
-
-    // Helper functions
-    fn hex_to_u32(s: &str) -> Result<u32, FromHexError> {
-        // 4 bytes = 32 bits
-        let bytes: [u8; 4] = hex::decode(s)?
-            .try_into()
-            .map_err(|_| FromHexError::InvalidStringLength)?;
-        Ok(u32::from_le_bytes(bytes))
-    }
-
-    fn hex_to_32_bytes(s: &str) -> Result<[u8; 32], FromHexError> {
-        hex::decode(s)?
-            .try_into()
-            .map_err(|_| FromHexError::InvalidStringLength)
-    }
-}
-
-/// Hashes a full 80 byte bitcoin header (including the nonce)
+/// Hashes a full 80 byte bitcoin header on CPU for verification
 pub fn hash_with_nonce(header: &[u8; 80]) -> [u8; 32] {
     Sha256::digest(Sha256::digest(header)).into()
 }
@@ -526,7 +464,7 @@ mod tests {
         let mut miner = GpuMiner::new(Some(4)).await.unwrap();
         assert!(miner.get_wg_size() == 4, "wg_size is set to chosen value.");
 
-        miner.autotune();
+        miner.autotune().await;
         assert!(miner.get_wg_size() != 4, "wg_size was optimized.");
         assert!(
             miner.get_wg_size() <= device.limits().max_compute_workgroup_size_x,

@@ -6,25 +6,11 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{TimeZone, Utc};
 
-use wgpu_sha256_miner::{
-    hash_with_nonce, sha256_parse_words, sha256_preprocess, BlockHeader, GpuMiner,
-};
+use wgpu_sha256_miner::{hash_with_nonce, sha256_parse_words, sha256_preprocess, GpuMiner};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Block 884,633
-    let header = BlockHeader::new(
-        "02000000",
-        "0000000000000000000146601a36528d193ce46aafc00a806b9512663ea89be8",
-        "e1419d88433680aeebc7baf6fea1356992cc06b9cb7be7c757a01e003cc78c2b",
-        "65d7e920",
-        "1700e526",
-    )
-    .unwrap();
-
-    let mut header_bytes = [0u8; 80];
-    // Add last header to the byte version, nonce left as 0
-    header_bytes[..76].copy_from_slice(&header.to_bytes());
+    let header_bytes = [0u8; 80];
 
     // Add padding to reach 128 bytes
     let padded = sha256_preprocess(&header_bytes);
