@@ -1,27 +1,35 @@
 use anyhow::{anyhow, Context, Result};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use url::Url;
 
+/// Using a trait allows us to moch the zmq_receiver
 pub trait ZmqReceiver {
-    fn recv(&self) -> Result<Vec<u8>>;
+    fn recv(&self) -> Result<[u8; 32]>;
 }
 
 pub struct Bridge<T: ZmqReceiver> {
     current_header: Option<[u8; 80]>,
-    last_block_hash: Option<String>,
+    last_block_hash: Option<[u8; 32]>,
     rpc_address: String,
+    sender: Sender<[u8; 80]>,
     zmq_address: String,
     zmq_receiver: T,
 }
 
 impl<T: ZmqReceiver> Bridge<T> {
-    pub fn new(rpc_address: &str, zmq_address: &str, zmq_receiver: T) -> Result<Self> {
+    /// Returns a Bridge and a receiver for new headers
+    pub fn new(
+        rpc_address: &str,
+        zmq_address: &str,
+        zmq_receiver: T,
+    ) -> Result<(Self, Receiver<[u8; 80]>)> {
         // Parsing urls and doing additional checks
         let rpc_url = Url::parse(rpc_address).context("Invalid RPC address.")?;
         if !["http", "https"].contains(&rpc_url.scheme()) {
             return Err(anyhow!("Only http or https are allowed for RPC."));
         }
 
-        let zmq_url = Url::parse(zmq_address).context("Invalid ZMQ address.")?;
+        let zmq_url = Url::parse(zmq_address).context("Invalid zmq address.")?;
         match zmq_url.scheme() {
             "tcp" => {
                 if zmq_url.host().is_none() || zmq_url.port().is_none() {
@@ -33,16 +41,22 @@ impl<T: ZmqReceiver> Bridge<T> {
                     return Err(anyhow!("zmq ipc address must have a path"));
                 }
             }
-            _ => return Err(anyhow!("Only tcp or ipc are allowed for ZMQ.")),
+            _ => return Err(anyhow!("Only tcp or ipc are allowed for zmq.")),
         }
 
-        Ok(Bridge {
-            current_header: None,
-            last_block_hash: None,
-            rpc_address: rpc_address.to_string(),
-            zmq_address: zmq_address.to_string(),
-            zmq_receiver,
-        })
+        let (sender, receiver) = mpsc::channel(8);
+
+        Ok((
+            Bridge {
+                current_header: None,
+                last_block_hash: None,
+                rpc_address: rpc_address.to_string(),
+                sender,
+                zmq_address: zmq_address.to_string(),
+                zmq_receiver,
+            },
+            receiver,
+        ))
     }
 }
 
@@ -53,8 +67,8 @@ mod tests {
 
     struct MockReceiver;
     impl ZmqReceiver for MockReceiver {
-        fn recv(&self) -> anyhow::Result<Vec<u8>> {
-            Ok(vec![1, 2, 3])
+        fn recv(&self) -> anyhow::Result<[u8; 32]> {
+            Ok([0u8; 32])
         }
     }
 
