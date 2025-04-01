@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 zmq = "0.10"
 anyhow = "1.0"
+url = "2.5"
