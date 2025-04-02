@@ -1,10 +1,12 @@
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use url::Url;
 
 /// Using a trait allows us to moch the zmq_receiver
+#[async_trait]
 pub trait ZmqReceiver {
-    fn recv(&self) -> Result<[u8; 32]>;
+    async fn recv(&self) -> Result<[u8; 32]>;
 }
 
 pub struct Bridge<T: ZmqReceiver> {
@@ -58,6 +60,10 @@ impl<T: ZmqReceiver> Bridge<T> {
             receiver,
         ))
     }
+
+    pub async fn listen_for_new_block() -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -66,8 +72,10 @@ mod tests {
     //use anyhow::Result;
 
     struct MockReceiver;
+
+    #[async_trait]
     impl ZmqReceiver for MockReceiver {
-        fn recv(&self) -> anyhow::Result<[u8; 32]> {
+        async fn recv(&self) -> anyhow::Result<[u8; 32]> {
             Ok([0u8; 32])
         }
     }

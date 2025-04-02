@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.44", features = ["full"] }
-zmq = "0.10"
+async-trait = "0.1"
+async_zmq = "0.4"
 anyhow = "1.0"
 url = "2.5"
