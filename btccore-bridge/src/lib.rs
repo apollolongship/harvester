@@ -1,7 +1,14 @@
+use std::sync::Arc;
+
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::{
+    mpsc::{self, Receiver, Sender},
+    Mutex,
+};
 use url::Url;
+
+pub struct Block;
 
 /// Using a trait allows us to moch the zmq_receiver
 #[async_trait]
@@ -9,9 +16,9 @@ pub trait ZmqReceiver {
     async fn recv(&self) -> Result<[u8; 32]>;
 }
 
+/// Bridge between Bitcoin Core and a tokio channel
 pub struct Bridge<T: ZmqReceiver> {
-    current_header: Option<[u8; 80]>,
-    last_block_hash: Option<[u8; 32]>,
+    block: Option<Block>,
     rpc_address: String,
     sender: Sender<[u8; 80]>,
     zmq_address: String,
@@ -24,7 +31,7 @@ impl<T: ZmqReceiver> Bridge<T> {
         rpc_address: &str,
         zmq_address: &str,
         zmq_receiver: T,
-    ) -> Result<(Self, Receiver<[u8; 80]>)> {
+    ) -> Result<(Arc<Mutex<Self>>, Receiver<[u8; 80]>)> {
         // Parsing urls and doing additional checks
         let rpc_url = Url::parse(rpc_address).context("Invalid RPC address.")?;
         if !["http", "https"].contains(&rpc_url.scheme()) {
@@ -49,21 +56,30 @@ impl<T: ZmqReceiver> Bridge<T> {
         let (sender, receiver) = mpsc::channel(8);
 
         Ok((
-            Bridge {
-                current_header: None,
-                last_block_hash: None,
+            Arc::new(Mutex::new(Bridge {
+                block: None,
                 rpc_address: rpc_address.to_string(),
                 sender,
                 zmq_address: zmq_address.to_string(),
                 zmq_receiver,
-            },
+            })),
             receiver,
         ))
     }
 
-    pub async fn listen_for_new_block() -> Result<()> {
-        Ok(())
+    /// Listens for new block indefinately
+    pub async fn listen_for_new_block(&self, payout_address: &str) -> Result<()> {
+        loop {
+            self.zmq_receiver.recv().await?;
+            let header = construct_header(payout_address);
+            self.sender.send(header).await?;
+        }
     }
+}
+
+// Constructs a block header
+fn construct_header(payout_address: &str) -> [u8; 80] {
+    return [0u8; 80];
 }
 
 #[cfg(test)]
@@ -127,5 +143,31 @@ mod tests {
         let bridge = Bridge::new("https://localhost:8332", "my_address", mock_receiver);
 
         assert!(bridge.is_err());
+    }
+
+    #[tokio::test]
+    async fn listen_for_new_block_works() {
+        let mock_receiver = MockReceiver;
+        let (bridge, mut header_rx) = Bridge::new(
+            "http://localhost:8332",
+            "tcp://127.0.0.1:28332",
+            mock_receiver,
+        )
+        .expect("Bridge creation failed.");
+
+        let thread_bridge = Arc::clone(&bridge);
+
+        let task = tokio::spawn(async move {
+            let guard = thread_bridge.lock().await;
+            guard
+                .listen_for_new_block("")
+                .await
+                .expect("Listening for block failed.");
+        });
+
+        let header = header_rx.recv().await.expect("Couldn't get header.");
+
+        assert_eq!(header.len(), 80);
+        task.abort();
     }
 }
