@@ -1,93 +1,74 @@
-use std::sync::Arc;
-
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
-use tokio::sync::{
-    mpsc::{self, Receiver, Sender},
-    Mutex,
-};
-use url::Url;
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 pub struct Block;
+pub struct BlockTemplate;
 
-/// Using a trait allows us to moch the zmq_receiver
+/// Trait for dependency injection and mocking
+#[async_trait]
+pub trait RpcClient {
+    async fn getblocktemplate(&self) -> Result<BlockTemplate>;
+}
+
+/// Using a trait allows us to mock the zmq_receiver
 #[async_trait]
 pub trait ZmqReceiver {
     async fn recv(&self) -> Result<[u8; 32]>;
 }
 
 /// Bridge between Bitcoin Core and a tokio channel
-pub struct Bridge<T: ZmqReceiver> {
+pub struct Bridge<T: RpcClient> {
     block: Option<Block>,
-    rpc_address: String,
-    sender: Sender<[u8; 80]>,
-    zmq_address: String,
-    zmq_receiver: T,
+    rpc_client: T,
+    sender: Sender<[u8; 32]>,
 }
 
-impl<T: ZmqReceiver> Bridge<T> {
+impl<T: RpcClient> Bridge<T> {
     /// Returns a Bridge and a receiver for new headers
-    pub fn new(
-        rpc_address: &str,
-        zmq_address: &str,
-        zmq_receiver: T,
-    ) -> Result<(Arc<Mutex<Self>>, Receiver<[u8; 80]>)> {
-        // Parsing urls and doing additional checks
-        let rpc_url = Url::parse(rpc_address).context("Invalid RPC address.")?;
-        if !["http", "https"].contains(&rpc_url.scheme()) {
-            return Err(anyhow!("Only http or https are allowed for RPC."));
-        }
-
-        let zmq_url = Url::parse(zmq_address).context("Invalid zmq address.")?;
-        match zmq_url.scheme() {
-            "tcp" => {
-                if zmq_url.host().is_none() || zmq_url.port().is_none() {
-                    return Err(anyhow!("zmq tcp address must have host and port"));
-                }
-            }
-            "ipc" => {
-                if zmq_url.path().is_empty() {
-                    return Err(anyhow!("zmq ipc address must have a path"));
-                }
-            }
-            _ => return Err(anyhow!("Only tcp or ipc are allowed for zmq.")),
-        }
-
+    pub fn new(rpc_client: T) -> Result<(Self, Receiver<[u8; 32]>)> {
         let (sender, receiver) = mpsc::channel(8);
 
         Ok((
-            Arc::new(Mutex::new(Bridge {
+            Bridge {
                 block: None,
-                rpc_address: rpc_address.to_string(),
+                rpc_client,
                 sender,
-                zmq_address: zmq_address.to_string(),
-                zmq_receiver,
-            })),
+            },
             receiver,
         ))
     }
 
-    /// Listens for new block indefinately
-    pub async fn listen_for_new_block(&self, payout_address: &str) -> Result<()> {
-        loop {
-            self.zmq_receiver.recv().await?;
-            let header = construct_header(payout_address);
-            self.sender.send(header).await?;
-        }
+    /// Constructs a block header
+    pub async fn construct_header(&self, payout_address: &str) -> [u8; 80] {
+        return [0u8; 80];
     }
 }
 
-// Constructs a block header
-fn construct_header(payout_address: &str) -> [u8; 80] {
-    return [0u8; 80];
+/// Listens for new block indefinitely.
+pub async fn listen_for_new_block(
+    sender: Sender<[u8; 32]>,
+    zmq_receiver: &impl ZmqReceiver,
+) -> Result<()> {
+    loop {
+        let prev_hash = zmq_receiver.recv().await?;
+        sender.send(prev_hash).await?;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    //use anyhow::Result;
 
+    struct MockClient;
     struct MockReceiver;
+
+    #[async_trait]
+    impl RpcClient for MockClient {
+        async fn getblocktemplate(&self) -> anyhow::Result<BlockTemplate> {
+            Ok(BlockTemplate {})
+        }
+    }
 
     #[async_trait]
     impl ZmqReceiver for MockReceiver {
@@ -96,78 +77,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn init_bridge_valid_urls() {
-        let mock_receiver = MockReceiver;
-        let bridge = Bridge::new(
-            "http://localhost:8332",
-            "tcp://127.0.0.1:28332",
-            mock_receiver,
-        );
-        assert!(bridge.is_ok());
+    #[tokio::test]
+    async fn bridge_creation_works() {
+        let mock_client = MockClient;
+        let res = Bridge::new(mock_client);
 
-        let mock_receiver = MockReceiver;
-        let bridge = Bridge::new(
-            "https://minecraft.net:8332",
-            "ipc:///tmp/zmq.sock",
-            mock_receiver,
-        );
-        assert!(bridge.is_ok());
-    }
-
-    #[test]
-    fn init_bridge_invalid_rpc_address_fails() {
-        let mock_receiver = MockReceiver;
-        let bridge = Bridge::new(
-            "ftp://localhost:8332",
-            "tcp://127.0.0.1:28332",
-            mock_receiver,
-        );
-
-        assert!(bridge.is_err());
-
-        let mock_receiver = MockReceiver;
-        let bridge = Bridge::new("bad_url", "tcp://127.0.0.1:28332", mock_receiver);
-
-        assert!(bridge.is_err());
-    }
-
-    #[test]
-    fn init_bridge_invalid_zmq_address_fails() {
-        let mock_receiver = MockReceiver;
-        let bridge = Bridge::new("http://localhost:8332", "tcp://", mock_receiver);
-
-        assert!(bridge.is_err());
-
-        let mock_receiver = MockReceiver;
-        let bridge = Bridge::new("https://localhost:8332", "my_address", mock_receiver);
-
-        assert!(bridge.is_err());
+        assert!(res.is_ok());
     }
 
     #[tokio::test]
     async fn listen_for_new_block_works() {
+        let mock_client = MockClient;
         let mock_receiver = MockReceiver;
-        let (bridge, mut header_rx) = Bridge::new(
-            "http://localhost:8332",
-            "tcp://127.0.0.1:28332",
-            mock_receiver,
-        )
-        .expect("Bridge creation failed.");
+        let (bridge, mut hash_rx) = Bridge::new(mock_client).expect("Bridge creation failed.");
 
-        let thread_bridge = Arc::clone(&bridge);
+        let sender = bridge.sender.clone();
 
         let task = tokio::spawn(async move {
-            let guard = thread_bridge.lock().await;
-            guard
-                .listen_for_new_block("")
+            listen_for_new_block(sender, &mock_receiver)
                 .await
                 .expect("Listening for block failed.");
         });
 
-        let header = header_rx.recv().await.expect("Couldn't get header.");
-
-        assert_eq!(header.len(), 80);
-        task.abort();
+        while let Some(_) = hash_rx.recv().await {
+            let header = bridge.construct_header("").await;
+            assert_eq!(header.len(), 80);
+            task.abort();
+            break;
+        }
     }
 }
