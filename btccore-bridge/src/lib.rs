@@ -2,17 +2,34 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-struct Transaction;
+type Transaction = Vec<u8>;
+
+#[derive(Debug, Default)]
+struct CoinbaseTransaction;
 
 /// Full block
 pub struct Block {
     header: [u8; 80],
     transactions: Vec<Transaction>,
-    count: u32,
 }
 
-/// Block template as per bitcoin core
-pub struct BlockTemplate;
+/// Block template as per BIP 0022
+/// https://en.bitcoin.it/wiki/BIP_0022
+#[derive(Debug, Default)]
+pub struct BlockTemplate {
+    bits: String,
+    curtime: u32,
+    height: u32,
+    previousblockhash: String,
+    sigoplimit: u32,
+    sizelimit: u32,
+    transactions: Vec<Transaction>,
+    version: u8,
+    // coinbaseaux is ignored for this implementation
+    coinbasetxn: CoinbaseTransaction,
+    coinbasevalue: u32,
+    // workid is ignored for this implementation
+}
 
 /// Trait for dependency injection and mocking
 #[async_trait]
@@ -48,8 +65,8 @@ impl<T: RpcClient> Bridge<T> {
         )
     }
 
-    /// Updates internal block, returns new header
-    pub async fn update_block(&mut self, payout_address: &str) -> Result<[u8; 80]> {
+    /// Updates internal block
+    pub async fn update_block(&mut self, payout_address: &str) -> Result<()> {
         let template = self
             .rpc_client
             .getblocktemplate()
@@ -60,12 +77,20 @@ impl<T: RpcClient> Bridge<T> {
         let header = block.header;
         self.block = Some(block);
 
-        Ok(header)
+        Ok(())
     }
 
     /// Getter for block
     pub fn get_block(&self) -> Option<&Block> {
         self.block.as_ref()
+    }
+
+    /// Getter for current header
+    pub fn get_current_header(&self) -> Option<&[u8; 80]> {
+        match self.block.as_ref() {
+            Some(block) => Some(&block.header),
+            None => None,
+        }
     }
 
     /// Get a clone of the sender
@@ -80,8 +105,14 @@ pub async fn listen_for_new_block(
     zmq_receiver: impl ZmqReceiver,
 ) -> Result<()> {
     loop {
-        let prev_hash = zmq_receiver.recv().await?;
-        sender.send(prev_hash).await?;
+        let prev_hash = zmq_receiver
+            .recv()
+            .await
+            .context("Failed to receive ZMQ message.")?;
+        sender
+            .send(prev_hash)
+            .await
+            .context("Failed to send message through channel.")?;
     }
 }
 
@@ -90,7 +121,6 @@ fn construct_block(template: BlockTemplate, payout_address: &str) -> Block {
     Block {
         header: [0u8; 80],
         transactions: vec![],
-        count: 0,
     }
 }
 
@@ -104,7 +134,7 @@ mod tests {
     #[async_trait]
     impl RpcClient for MockClient {
         async fn getblocktemplate(&self) -> anyhow::Result<BlockTemplate> {
-            Ok(BlockTemplate)
+            Ok(BlockTemplate::default())
         }
     }
 
@@ -135,7 +165,9 @@ mod tests {
         let task = tokio::spawn(listen_for_new_block(sender, mock_receiver));
 
         while let Some(_) = hash_rx.recv().await {
-            let header = bridge.update_block("").await.unwrap();
+            let res = bridge.update_block("").await;
+            assert!(res.is_ok());
+            let header = bridge.get_current_header().unwrap();
             assert_eq!(header.len(), 80);
             task.abort();
             break;
