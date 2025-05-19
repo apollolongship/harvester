@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 type Transaction = Vec<u8>;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct CoinbaseTransaction;
 
 /// Full block
@@ -15,7 +16,7 @@ pub struct Block {
 
 /// Block template as per BIP 0022
 /// https://en.bitcoin.it/wiki/BIP_0022
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct BlockTemplate {
     bits: String,
     curtime: u32,
@@ -24,10 +25,10 @@ pub struct BlockTemplate {
     sigoplimit: u32,
     sizelimit: u32,
     transactions: Vec<Transaction>,
-    version: u8,
+    version: u32,
     // coinbaseaux is ignored for this implementation
-    coinbasetxn: CoinbaseTransaction,
-    coinbasevalue: u32,
+    //coinbasetxn: CoinbaseTransaction,
+    coinbasevalue: u64,
     // workid is ignored for this implementation
 }
 
@@ -35,6 +36,14 @@ pub struct BlockTemplate {
 #[async_trait]
 pub trait RpcClient {
     async fn getblocktemplate(&self) -> Result<BlockTemplate>;
+}
+
+/// Struct to parse the response from JSON-RPC getblocktemplate
+#[derive(Debug, Deserialize)]
+pub struct JsonRpcResponse {
+    result: BlockTemplate,
+    error: Option<serde_json::Value>,
+    id: String,
 }
 
 /// Using a trait allows us to mock the zmq_receiver
@@ -134,7 +143,43 @@ mod tests {
     #[async_trait]
     impl RpcClient for MockClient {
         async fn getblocktemplate(&self) -> anyhow::Result<BlockTemplate> {
-            Ok(BlockTemplate::default())
+            // Example JSON-RPC response for getblocktemplate
+            let raw = r#"
+            {
+                "result":
+                {
+                    "capabilities":["proposal"],
+                    "version":536870912,
+                    "rules":["csv","!segwit","taproot"],
+                    "vbavailable":{},
+                    "vbrequired":0,
+                    "previousblockhash":"5f127e4316a7cfe0b9c86c251c49bf94517007705091cb5f38f5db1f9f221746",
+                    "transactions":[],
+                    "coinbaseaux":{},
+                    "coinbasevalue":5000000000,
+                    "longpollid":"5f127e4316a7cfe0b9c86c251c49bf94517007705091cb5f38f5db1f9f2217460",
+                    "target":"7fffff0000000000000000000000000000000000000000000000000000000000",
+                    "mintime":1747616695,
+                    "mutable":["time","transactions","prevblock"],
+                    "noncerange":"00000000ffffffff",
+                    "sigoplimit":80000,
+                    "sizelimit":4000000,
+                    "weightlimit":4000000,
+                    "curtime":1747695629,
+                    "bits":"207fffff",
+                    "height":102,
+                    "default_witness_commitment":"6a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf9"
+                },
+                "error":null,
+                "id":"curltest"
+            }"#;
+
+            let response: JsonRpcResponse =
+                serde_json::from_str(raw).context("Failed to parse JSON-RPC message.")?;
+
+            let template: BlockTemplate = response.result;
+
+            Ok(template)
         }
     }
 
@@ -152,6 +197,15 @@ mod tests {
 
         assert!(bridge.get_block().is_none());
         assert_eq!(hash_rx.capacity(), 8);
+    }
+
+    #[tokio::test]
+    async fn parsing_template_from_json_works() {
+        let mock_client = MockClient;
+
+        let res = mock_client.getblocktemplate().await;
+
+        assert!(res.is_ok());
     }
 
     #[tokio::test]
@@ -173,7 +227,4 @@ mod tests {
             break;
         }
     }
-
-    #[tokio::test]
-    async fn construct_block_works() {}
 }
